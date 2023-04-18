@@ -1,42 +1,23 @@
-import {
-  V4MAPPED,
-  ADDRCONFIG,
-  ALL,
-  promises as dnsPromises,
-  lookup as dnsLookup,
-} from "node:dns";
+import dns from "node:dns";
 import { promisify } from "node:util";
 import os from "node:os";
 import { LookupOptions } from "./types";
 
-const { Resolver } = dnsPromises;
-
-const kCacheableLookupCreateConnection = Symbol(
-  "cacheableLookupCreateConnection"
-);
-const kCacheableLookupInstance = Symbol("cacheableLookupInstance");
 const kExpires = Symbol("expires");
 
-const supportsALL = typeof ALL === "number";
+const supportsALL = typeof dns.ALL === "number";
 
-const verifyAgent = (agent) => {
-  if (!(agent && typeof agent.createConnection === "function")) {
-    throw new Error("Expected an Agent instance as the first argument");
-  }
-};
-
-const map4to6 = (entries) => {
+function map4to6(entries) {
   for (const entry of entries) {
     if (entry.family === 6) {
       continue;
     }
-
     entry.address = `::ffff:${entry.address}`;
     entry.family = 6;
   }
-};
+}
 
-const getIfaceInfo = () => {
+function getIfaceInfo(): { has4: boolean; has6: boolean } {
   let has4 = false;
   let has6 = false;
 
@@ -60,13 +41,13 @@ const getIfaceInfo = () => {
   }
 
   return { has4, has6 };
-};
+}
 
-const isIterable = (map) => {
+function isIterable(map): boolean {
   return Symbol.iterator in map;
-};
+}
 
-const ignoreNoResultErrors = (dnsPromise) => {
+function ignoreNoResultErrors(dnsPromise) {
   return dnsPromise.catch((error) => {
     if (
       error.code === "ENODATA" ||
@@ -75,10 +56,9 @@ const ignoreNoResultErrors = (dnsPromise) => {
     ) {
       return [];
     }
-
     throw error;
   });
-};
+}
 
 const ttl = { ttl: true };
 const all = { all: true };
@@ -89,8 +69,8 @@ export default class CacheableLookup {
   maxTtl;
   errorTtl;
   _cache;
-  _resolver;
-  _dnsLookup;
+  _dnsLookup = promisify(dns.lookup);
+  _resolver = new dns.promises.Resolver();
   stats;
   _resolve4;
   _resolve6;
@@ -106,27 +86,17 @@ export default class CacheableLookup {
     maxTtl = Infinity,
     fallbackDuration = 3600,
     errorTtl = 0.15,
-    resolver = new Resolver(),
-    lookup = dnsLookup,
   } = {}) {
     this.maxTtl = maxTtl;
     this.errorTtl = errorTtl;
-
     this._cache = cache;
-    this._resolver = resolver;
-    this._dnsLookup = lookup && promisify(lookup);
     this.stats = {
       cache: 0,
       query: 0,
     };
 
-    if (this._resolver instanceof Resolver) {
-      this._resolve4 = this._resolver.resolve4.bind(this._resolver);
-      this._resolve6 = this._resolver.resolve6.bind(this._resolver);
-    } else {
-      this._resolve4 = promisify(this._resolver.resolve4.bind(this._resolver));
-      this._resolve6 = promisify(this._resolver.resolve6.bind(this._resolver));
-    }
+    this._resolve4 = this._resolver.resolve4.bind(this._resolver);
+    this._resolve6 = this._resolver.resolve6.bind(this._resolver);
 
     this._iface = getIfaceInfo();
 
@@ -194,83 +164,76 @@ export default class CacheableLookup {
   }
 
   async lookupAsync(hostname, options: LookupOptions = {}) {
-    if (typeof options === "number") {
-      options = {
-        family: options,
-      };
-    }
-
-    let cached = await this.query(hostname);
+    let results = await this.query(hostname);
 
     if (options.family === 6) {
-      const filtered = cached.filter((entry) => entry.family === 6);
+      const filtered = results.filter((entry) => entry.family === 6);
 
-      if (options.hints & V4MAPPED) {
-        if ((supportsALL && options.hints & ALL) || filtered.length === 0) {
-          map4to6(cached);
+      if (options.hints & dns.V4MAPPED) {
+        if ((supportsALL && options.hints & dns.ALL) || filtered.length === 0) {
+          map4to6(results);
         } else {
-          cached = filtered;
+          results = filtered;
         }
       } else {
-        cached = filtered;
+        results = filtered;
       }
     } else if (options.family === 4) {
-      cached = cached.filter((entry) => entry.family === 4);
+      results = results.filter((entry) => entry.family === 4);
     }
 
-    if (options.hints & ADDRCONFIG) {
+    if (options.hints & dns.ADDRCONFIG) {
       const { _iface } = this;
-      cached = cached.filter((entry) =>
+      results = results.filter((entry) =>
         entry.family === 6 ? _iface.has6 : _iface.has4
       );
     }
 
-    if (cached.length === 0) {
+    if (results.length === 0) {
       const error: any = new Error(`cacheableLookup ENOTFOUND ${hostname}`);
       error.code = "ENOTFOUND";
       error.hostname = hostname;
-
       throw error;
     }
 
     if (options.all) {
-      return cached;
+      return results;
     }
 
-    return cached[0];
+    return results[0];
   }
 
   async query(hostname) {
     let source = "cache";
-    let cached = await this._cache.get(hostname);
+    let result = await this._cache.get(hostname);
 
-    if (cached) {
+    if (result) {
       this.stats.cache++;
     }
 
-    if (!cached) {
+    if (!result) {
       const pending = this._pending[hostname];
       if (pending) {
         this.stats.cache++;
-        cached = await pending;
+        result = await pending;
       } else {
         source = "query";
-        const newPromise = this.queryAndCache(hostname);
-        this._pending[hostname] = newPromise;
+        this._pending[hostname] = this.queryAndCache(hostname);
+        const newPromise = this._pending[hostname];
         this.stats.query++;
         try {
-          cached = await newPromise;
+          result = await newPromise;
         } finally {
           delete this._pending[hostname];
         }
       }
     }
 
-    cached = cached.map((entry) => {
+    result = result.map((entry) => {
       return { ...entry, source };
     });
 
-    return cached;
+    return result;
   }
 
   async _resolve(hostname) {
@@ -418,42 +381,6 @@ export default class CacheableLookup {
       if (this._removalTimeout.unref) {
         this._removalTimeout.unref();
       }
-    }
-  }
-
-  install(agent) {
-    verifyAgent(agent);
-
-    if (kCacheableLookupCreateConnection in agent) {
-      throw new Error("CacheableLookup has been already installed");
-    }
-
-    agent[kCacheableLookupCreateConnection] = agent.createConnection;
-    agent[kCacheableLookupInstance] = this;
-
-    agent.createConnection = (options, callback) => {
-      if (!("lookup" in options)) {
-        options.lookup = this.lookup;
-      }
-
-      return agent[kCacheableLookupCreateConnection](options, callback);
-    };
-  }
-
-  uninstall(agent) {
-    verifyAgent(agent);
-
-    if (agent[kCacheableLookupCreateConnection]) {
-      if (agent[kCacheableLookupInstance] !== this) {
-        throw new Error(
-          "The agent is not owned by this CacheableLookup instance"
-        );
-      }
-
-      agent.createConnection = agent[kCacheableLookupCreateConnection];
-
-      delete agent[kCacheableLookupCreateConnection];
-      delete agent[kCacheableLookupInstance];
     }
   }
 
