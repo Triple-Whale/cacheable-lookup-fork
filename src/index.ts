@@ -40,6 +40,10 @@ function getIfaceInfo(): { has4: boolean; has6: boolean } {
     }
   }
 
+  if (!has4 && !has6) {
+    has4 = true;
+  }
+
   return { has4, has6 };
 }
 
@@ -133,7 +137,7 @@ export default class CacheableLookup {
     return this._resolver.getServers();
   }
 
-  lookup(hostname, options, callback) {
+  lookup(hostname, options, callback?) {
     if (typeof options === "function") {
       callback = options;
       options = {};
@@ -183,9 +187,8 @@ export default class CacheableLookup {
     }
 
     if (options.hints & dns.ADDRCONFIG) {
-      const { _iface } = this;
       results = results.filter((entry) =>
-        entry.family === 6 ? _iface.has6 : _iface.has4
+        entry.family === 6 ? this._iface.has6 : this._iface.has4
       );
     }
 
