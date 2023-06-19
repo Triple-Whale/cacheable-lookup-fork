@@ -279,6 +279,10 @@ export default class CacheableLookup {
       cacheTtl = aaaaTtl;
     }
 
+    if (hostname.endsWith('svc.cluster.local.')) {
+      cacheTtl = 180;
+    }
+
     return {
       entries: [...A, ...AAAA],
       cacheTtl,
