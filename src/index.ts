@@ -76,8 +76,8 @@ export default class CacheableLookup {
   _dnsLookup = promisify(dns.lookup);
   _resolver = new dns.promises.Resolver();
   stats;
-  _resolve4;
-  _resolve6;
+  _resolve4: dns.promises.Resolver['resolve4'];
+  _resolve6: dns.promises.Resolver['resolve6'];
   _iface;
   _pending;
   _nextRemovalTime;
