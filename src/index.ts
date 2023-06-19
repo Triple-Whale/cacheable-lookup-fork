@@ -240,6 +240,9 @@ export default class CacheableLookup {
   }
 
   async _resolve(hostname) {
+    if (hostname && !hostname.endsWith(".")) {
+      hostname += ".";
+    }
     // ANY is unsafe as it doesn't trigger new queries in the underlying server.
     const [A, AAAA] = await Promise.all([
       ignoreNoResultErrors(this._resolve4(hostname, ttl)),
