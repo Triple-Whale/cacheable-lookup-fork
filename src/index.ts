@@ -51,7 +51,8 @@ function isIterable(map): boolean {
   return Symbol.iterator in map;
 }
 
-function ignoreNoResultErrors(dnsPromise) {
+function ignoreNoResultErrors<T = any>(dnsPromise: Promise<T>): Promise<T> {
+  // @ts-ignore
   return dnsPromise.catch((error) => {
     if (
       error.code === "ENODATA" ||
@@ -247,7 +248,7 @@ export default class CacheableLookup {
     const [A, AAAA] = await Promise.all([
       ignoreNoResultErrors(this._resolve4(hostname, ttl)),
       ignoreNoResultErrors(this._resolve6(hostname, ttl)),
-    ]);
+    ])
 
     let aTtl = 0;
     let aaaaTtl = 0;
@@ -256,16 +257,20 @@ export default class CacheableLookup {
     const now = Date.now();
 
     for (const entry of A) {
+      // @ts-ignore
       entry.family = 4;
+      // @ts-ignore
       entry.expires = now + entry.ttl * 1000;
-
+      // @ts-ignore
       aTtl = Math.max(aTtl, entry.ttl);
     }
 
     for (const entry of AAAA) {
+      // @ts-ignore
       entry.family = 6;
+      // @ts-ignore
       entry.expires = now + entry.ttl * 1000;
-
+      // @ts-ignore
       aaaaTtl = Math.max(aaaaTtl, entry.ttl);
     }
 
@@ -280,7 +285,7 @@ export default class CacheableLookup {
     }
 
     if (hostname.endsWith('svc.cluster.local.')) {
-      cacheTtl = 180;
+      cacheTtl = 3600;
     }
 
     return {
@@ -296,7 +301,7 @@ export default class CacheableLookup {
         // See https://github.com/szmarczak/cacheable-lookup/issues/42
         ignoreNoResultErrors(this._dnsLookup(hostname, all4)),
         ignoreNoResultErrors(this._dnsLookup(hostname, all6)),
-      ]);
+      ]) as dns.LookupAddress[][];
 
       return {
         entries: [...A, ...AAAA],
@@ -342,6 +347,7 @@ export default class CacheableLookup {
     let query = await this._resolve(hostname);
 
     if (query.entries.length === 0 && this._dnsLookup) {
+      // @ts-ignore
       query = await this._lookup(hostname);
 
       if (query.entries.length !== 0 && this.fallbackDuration > 0) {
