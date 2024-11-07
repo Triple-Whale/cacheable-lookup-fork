@@ -75,10 +75,8 @@ export default class CacheableLookup {
   errorTtl;
   _cache;
   _dnsLookup = promisify(dns.lookup);
-  _resolver = new dns.promises.Resolver();
+  resolver = new dns.promises.Resolver();
   stats;
-  _resolve4: dns.promises.Resolver['resolve4'];
-  _resolve6: dns.promises.Resolver['resolve6'];
   _iface;
   _pending;
   _nextRemovalTime;
@@ -99,9 +97,6 @@ export default class CacheableLookup {
       cache: 0,
       query: 0,
     };
-
-    this._resolve4 = this._resolver.resolve4.bind(this._resolver);
-    this._resolve6 = this._resolver.resolve6.bind(this._resolver);
 
     this._iface = getIfaceInfo();
 
@@ -131,11 +126,11 @@ export default class CacheableLookup {
   set servers(servers) {
     this.clear();
 
-    this._resolver.setServers(servers);
+    this.resolver.setServers(servers);
   }
 
   get servers() {
-    return this._resolver.getServers();
+    return this.resolver.getServers();
   }
 
   lookup(hostname, options, callback?) {
@@ -246,8 +241,8 @@ export default class CacheableLookup {
     }
     // ANY is unsafe as it doesn't trigger new queries in the underlying server.
     const [A, AAAA] = await Promise.all([
-      ignoreNoResultErrors(this._resolve4(hostname, ttl)),
-      ignoreNoResultErrors(this._resolve6(hostname, ttl)),
+      ignoreNoResultErrors(this.resolver.resolve4(hostname, ttl)),
+      ignoreNoResultErrors(this.resolver.resolve6(hostname, ttl)),
     ])
 
     let aTtl = 0;
