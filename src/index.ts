@@ -7,6 +7,16 @@ const kExpires = Symbol("expires");
 
 const supportsALL = typeof dns.ALL === "number";
 
+let FAILING = false;
+
+if (!globalThis.TW_HEALTH_CHECKS) {
+  globalThis.TW_HEALTH_CHECKS = []
+}
+
+globalThis.TW_HEALTH_CHECKS.push(() => {
+  return !FAILING
+})
+
 function map4to6(entries) {
   for (const entry of entries) {
     if (entry.family === 6) {
@@ -53,13 +63,19 @@ function isIterable(map): boolean {
 
 function ignoreNoResultErrors<T = any>(dnsPromise: Promise<T>): Promise<T> {
   // @ts-ignore
-  return dnsPromise.catch((error) => {
+  return dnsPromise.then((r) => {
+    FAILING = false
+    return r
+  }).catch((error) => {
     if (
       error.code === "ENODATA" ||
       error.code === "ENOTFOUND" ||
       error.code === "ENOENT" // Windows: name exists, but not this record type
     ) {
       return [];
+    }
+    if (error.code === "ETIMEOUT") {
+      FAILING = true
     }
     throw error;
   });
