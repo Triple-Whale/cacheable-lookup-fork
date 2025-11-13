@@ -2,8 +2,7 @@ import dns from 'node:dns';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import { LookupOptions } from './types';
-
-const kExpires = Symbol('expires');
+import { LRUCache } from 'lru-cache';
 
 const supportsALL = typeof dns.ALL === 'number';
 
@@ -57,10 +56,6 @@ function getIfaceInfo(): { has4: boolean; has6: boolean } {
   return { has4, has6 };
 }
 
-function isIterable(map): boolean {
-  return Symbol.iterator in map;
-}
-
 function ignoreNoResultErrors<T = any>(dnsPromise: Promise<T>): Promise<T> {
   // @ts-ignore
   return dnsPromise
@@ -91,34 +86,23 @@ const all6 = { all: true, family: 6 };
 export default class CacheableLookup {
   maxTtl;
   errorTtl;
-  _cache: Map<any, any>;
+  _cache: LRUCache<string, any>;
   _dnsLookup = promisify(dns.lookup);
   resolver = new dns.promises.Resolver();
-  stats;
   _iface;
   _pending = new Map();
-  _nextRemovalTime;
   _hostnamesToFallback;
   fallbackDuration;
-  _fallbackInterval;
   _removalTimeout;
-  constructor({
-    cache = new Map(),
-    maxTtl = Infinity,
-    fallbackDuration = 3600,
-    errorTtl = 0.15,
-  } = {}) {
+  constructor({ maxTtl = Infinity, fallbackDuration = 3600, errorTtl = 0.15 } = {}) {
     this.maxTtl = maxTtl;
     this.errorTtl = errorTtl;
-    this._cache = cache;
-    this.stats = {
-      cache: 0,
-      query: 0,
-    };
+    this._cache = new LRUCache({
+      max: 1000,
+      ttl: maxTtl,
+    });
 
     this._iface = getIfaceInfo();
-
-    this._nextRemovalTime = false;
     this._hostnamesToFallback = new Set();
 
     this.fallbackDuration = fallbackDuration;
@@ -132,8 +116,6 @@ export default class CacheableLookup {
       if (interval.unref) {
         interval.unref();
       }
-
-      this._fallbackInterval = interval;
     }
 
     this.lookup = this.lookup.bind(this);
@@ -216,20 +198,14 @@ export default class CacheableLookup {
     let source = 'cache';
     let result = this._cache.get(hostname);
 
-    if (result) {
-      this.stats.cache++;
-    }
-
     if (!result) {
       const pending = this._pending.get(hostname);
       if (pending) {
-        this.stats.cache++;
         result = await pending;
       } else {
         source = 'query';
         const promise = this.queryAndCache(hostname);
         this._pending.set(hostname, promise);
-        this.stats.query++;
         try {
           result = await promise;
         } finally {
@@ -321,27 +297,7 @@ export default class CacheableLookup {
   }
 
   _set(hostname, data, cacheTtl) {
-    if (this.maxTtl > 0 && cacheTtl > 0) {
-      cacheTtl = Math.min(cacheTtl, this.maxTtl) * 1000;
-      data[kExpires] = Date.now() + cacheTtl;
-
-      try {
-        this._cache.set(hostname, data);
-      } catch (error) {
-        this.lookupAsync = async () => {
-          const cacheError: any = new Error(
-            'Cache Error. Please recreate the CacheableLookup instance.',
-          );
-          cacheError.cause = error;
-
-          throw cacheError;
-        };
-      }
-
-      if (isIterable(this._cache)) {
-        this._tick(cacheTtl);
-      }
-    }
+    this._cache.set(hostname, data, { ttl: cacheTtl });    
   }
 
   async queryAndCache(hostname) {
@@ -365,43 +321,6 @@ export default class CacheableLookup {
     this._set(hostname, query.entries, cacheTtl);
 
     return query.entries;
-  }
-
-  _tick(ms) {
-    const nextRemovalTime = this._nextRemovalTime;
-
-    if (!nextRemovalTime || ms < nextRemovalTime) {
-      clearTimeout(this._removalTimeout);
-
-      this._nextRemovalTime = ms;
-
-      this._removalTimeout = setTimeout(() => {
-        this._nextRemovalTime = false;
-
-        let nextExpiry = Infinity;
-
-        const now = Date.now();
-
-        for (const [hostname, entries] of this._cache) {
-          const expires = entries[kExpires];
-
-          if (now >= expires) {
-            this._cache.delete(hostname);
-          } else if (expires < nextExpiry) {
-            nextExpiry = expires;
-          }
-        }
-
-        if (nextExpiry !== Infinity) {
-          this._tick(nextExpiry - now);
-        }
-      }, ms);
-
-      /* istanbul ignore next: There is no `timeout.unref()` when running inside an Electron renderer */
-      if (this._removalTimeout.unref) {
-        this._removalTimeout.unref();
-      }
-    }
   }
 
   updateInterfaceInfo() {
