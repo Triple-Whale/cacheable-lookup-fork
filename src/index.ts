@@ -1,21 +1,20 @@
-import dns from "node:dns";
-import { promisify } from "node:util";
-import os from "node:os";
-import { LookupOptions } from "./types";
+import dns from 'node:dns';
+import { promisify } from 'node:util';
+import os from 'node:os';
+import { LookupOptions } from './types';
+import { LRUCache } from 'lru-cache';
 
-const kExpires = Symbol("expires");
-
-const supportsALL = typeof dns.ALL === "number";
+const supportsALL = typeof dns.ALL === 'number';
 
 let FAILING = false;
 
 if (!globalThis.TW_HEALTH_CHECKS) {
-  globalThis.TW_HEALTH_CHECKS = []
+  globalThis.TW_HEALTH_CHECKS = [];
 }
 
 globalThis.TW_HEALTH_CHECKS.push(() => {
-  return !FAILING
-})
+  return !FAILING;
+});
 
 function map4to6(entries) {
   for (const entry of entries) {
@@ -38,7 +37,7 @@ function getIfaceInfo(): { has4: boolean; has6: boolean } {
         continue;
       }
 
-      if (iface.family === "IPv6") {
+      if (iface.family === 'IPv6') {
         has6 = true;
       } else {
         has4 = true;
@@ -57,28 +56,26 @@ function getIfaceInfo(): { has4: boolean; has6: boolean } {
   return { has4, has6 };
 }
 
-function isIterable(map): boolean {
-  return Symbol.iterator in map;
-}
-
 function ignoreNoResultErrors<T = any>(dnsPromise: Promise<T>): Promise<T> {
   // @ts-ignore
-  return dnsPromise.then((r) => {
-    FAILING = false
-    return r
-  }).catch((error) => {
-    if (
-      error.code === "ENODATA" ||
-      error.code === "ENOTFOUND" ||
-      error.code === "ENOENT" // Windows: name exists, but not this record type
-    ) {
-      return [];
-    }
-    if (error.code === "ETIMEOUT") {
-      FAILING = true
-    }
-    throw error;
-  });
+  return dnsPromise
+    .then((r) => {
+      FAILING = false;
+      return r;
+    })
+    .catch((error) => {
+      if (
+        error.code === 'ENODATA' ||
+        error.code === 'ENOTFOUND' ||
+        error.code === 'ENOENT' // Windows: name exists, but not this record type
+      ) {
+        return [];
+      }
+      if (error.code === 'ETIMEOUT') {
+        FAILING = true;
+      }
+      throw error;
+    });
 }
 
 const ttl = { ttl: true };
@@ -89,35 +86,23 @@ const all6 = { all: true, family: 6 };
 export default class CacheableLookup {
   maxTtl;
   errorTtl;
-  _cache;
+  _cache: LRUCache<string, any>;
   _dnsLookup = promisify(dns.lookup);
   resolver = new dns.promises.Resolver();
-  stats;
   _iface;
-  _pending;
-  _nextRemovalTime;
+  _pending = new Map();
   _hostnamesToFallback;
   fallbackDuration;
-  _fallbackInterval;
   _removalTimeout;
-  constructor({
-    cache = new Map(),
-    maxTtl = Infinity,
-    fallbackDuration = 3600,
-    errorTtl = 0.15,
-  } = {}) {
+  constructor({ maxTtl = Infinity, fallbackDuration = 3600, errorTtl = 0.15 } = {}) {
     this.maxTtl = maxTtl;
     this.errorTtl = errorTtl;
-    this._cache = cache;
-    this.stats = {
-      cache: 0,
-      query: 0,
-    };
+    this._cache = new LRUCache({
+      max: 1000,
+      ttl: maxTtl,
+    });
 
     this._iface = getIfaceInfo();
-
-    this._pending = {};
-    this._nextRemovalTime = false;
     this._hostnamesToFallback = new Set();
 
     this.fallbackDuration = fallbackDuration;
@@ -131,8 +116,6 @@ export default class CacheableLookup {
       if (interval.unref) {
         interval.unref();
       }
-
-      this._fallbackInterval = interval;
     }
 
     this.lookup = this.lookup.bind(this);
@@ -150,31 +133,24 @@ export default class CacheableLookup {
   }
 
   lookup(hostname, options, callback?) {
-    if (typeof options === "function") {
+    if (typeof options === 'function') {
       callback = options;
       options = {};
-    } else if (typeof options === "number") {
+    } else if (typeof options === 'number') {
       options = {
         family: options,
       };
     }
 
     if (!callback) {
-      throw new Error("Callback must be a function.");
+      throw new Error('Callback must be a function.');
     }
 
     this.lookupAsync(hostname, options).then((result) => {
       if (options.all) {
         callback(null, result);
       } else {
-        callback(
-          null,
-          result.address,
-          result.family,
-          result.expires,
-          result.ttl,
-          result.source
-        );
+        callback(null, result.address, result.family, result.expires, result.ttl, result.source);
       }
     }, callback);
   }
@@ -200,13 +176,13 @@ export default class CacheableLookup {
 
     if (options.hints & dns.ADDRCONFIG) {
       results = results.filter((entry) =>
-        entry.family === 6 ? this._iface.has6 : this._iface.has4
+        entry.family === 6 ? this._iface.has6 : this._iface.has4,
       );
     }
 
     if (results.length === 0) {
       const error: any = new Error(`cacheableLookup ENOTFOUND ${hostname}`);
-      error.code = "ENOTFOUND";
+      error.code = 'ENOTFOUND';
       error.hostname = hostname;
       throw error;
     }
@@ -219,27 +195,21 @@ export default class CacheableLookup {
   }
 
   async query(hostname) {
-    let source = "cache";
-    let result = await this._cache.get(hostname);
-
-    if (result) {
-      this.stats.cache++;
-    }
+    let source = 'cache';
+    let result = this._cache.get(hostname);
 
     if (!result) {
-      const pending = this._pending[hostname];
+      const pending = this._pending.get(hostname);
       if (pending) {
-        this.stats.cache++;
         result = await pending;
       } else {
-        source = "query";
-        this._pending[hostname] = this.queryAndCache(hostname);
-        const newPromise = this._pending[hostname];
-        this.stats.query++;
+        source = 'query';
+        const promise = this.queryAndCache(hostname);
+        this._pending.set(hostname, promise);
         try {
-          result = await newPromise;
+          result = await promise;
         } finally {
-          delete this._pending[hostname];
+          this._pending.delete(hostname);
         }
       }
     }
@@ -252,14 +222,14 @@ export default class CacheableLookup {
   }
 
   async _resolve(hostname) {
-    if (hostname && !hostname.endsWith(".")) {
-      hostname += ".";
+    if (hostname && !hostname.endsWith('.')) {
+      hostname += '.';
     }
     // ANY is unsafe as it doesn't trigger new queries in the underlying server.
     const [A, AAAA] = await Promise.all([
       ignoreNoResultErrors(this.resolver.resolve4(hostname, ttl)),
       ignoreNoResultErrors(this.resolver.resolve6(hostname, ttl)),
-    ])
+    ]);
 
     let aTtl = 0;
     let aaaaTtl = 0;
@@ -307,12 +277,12 @@ export default class CacheableLookup {
 
   async _lookup(hostname) {
     try {
-      const [A, AAAA] = await Promise.all([
+      const [A, AAAA] = (await Promise.all([
         // Passing {all: true} doesn't return all IPv4 and IPv6 entries.
         // See https://github.com/szmarczak/cacheable-lookup/issues/42
         ignoreNoResultErrors(this._dnsLookup(hostname, all4)),
         ignoreNoResultErrors(this._dnsLookup(hostname, all6)),
-      ]) as dns.LookupAddress[][];
+      ])) as dns.LookupAddress[][];
 
       return {
         entries: [...A, ...AAAA],
@@ -326,28 +296,8 @@ export default class CacheableLookup {
     }
   }
 
-  async _set(hostname, data, cacheTtl) {
-    if (this.maxTtl > 0 && cacheTtl > 0) {
-      cacheTtl = Math.min(cacheTtl, this.maxTtl) * 1000;
-      data[kExpires] = Date.now() + cacheTtl;
-
-      try {
-        await this._cache.set(hostname, data, cacheTtl);
-      } catch (error) {
-        this.lookupAsync = async () => {
-          const cacheError: any = new Error(
-            "Cache Error. Please recreate the CacheableLookup instance."
-          );
-          cacheError.cause = error;
-
-          throw cacheError;
-        };
-      }
-
-      if (isIterable(this._cache)) {
-        this._tick(cacheTtl);
-      }
-    }
+  _set(hostname, data, cacheTtl) {
+    this._cache.set(hostname, data, { ttl: cacheTtl });    
   }
 
   async queryAndCache(hostname) {
@@ -367,48 +317,10 @@ export default class CacheableLookup {
       }
     }
 
-    const cacheTtl =
-      query.entries.length === 0 ? this.errorTtl : query.cacheTtl;
-    await this._set(hostname, query.entries, cacheTtl);
+    const cacheTtl = query.entries.length === 0 ? this.errorTtl : query.cacheTtl;
+    this._set(hostname, query.entries, cacheTtl);
 
     return query.entries;
-  }
-
-  _tick(ms) {
-    const nextRemovalTime = this._nextRemovalTime;
-
-    if (!nextRemovalTime || ms < nextRemovalTime) {
-      clearTimeout(this._removalTimeout);
-
-      this._nextRemovalTime = ms;
-
-      this._removalTimeout = setTimeout(() => {
-        this._nextRemovalTime = false;
-
-        let nextExpiry = Infinity;
-
-        const now = Date.now();
-
-        for (const [hostname, entries] of this._cache) {
-          const expires = entries[kExpires];
-
-          if (now >= expires) {
-            this._cache.delete(hostname);
-          } else if (expires < nextExpiry) {
-            nextExpiry = expires;
-          }
-        }
-
-        if (nextExpiry !== Infinity) {
-          this._tick(nextExpiry - now);
-        }
-      }, ms);
-
-      /* istanbul ignore next: There is no `timeout.unref()` when running inside an Electron renderer */
-      if (this._removalTimeout.unref) {
-        this._removalTimeout.unref();
-      }
-    }
   }
 
   updateInterfaceInfo() {
@@ -416,10 +328,7 @@ export default class CacheableLookup {
 
     this._iface = getIfaceInfo();
 
-    if (
-      (_iface.has4 && !this._iface.has4) ||
-      (_iface.has6 && !this._iface.has6)
-    ) {
+    if ((_iface.has4 && !this._iface.has4) || (_iface.has6 && !this._iface.has6)) {
       this._cache.clear();
     }
   }
