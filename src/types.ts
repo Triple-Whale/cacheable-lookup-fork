@@ -5,25 +5,7 @@ type AsyncResolver = dnsPromises.Resolver;
 export type IPFamily = 4 | 6;
 export type EntrySource = "query" | "cache";
 
-type TPromise<T> = T | Promise<T>;
-
-export interface CacheInstance {
-	set(
-		hostname: string,
-		entries: EntryObject[],
-		ttl: number
-	): TPromise<void | boolean | this>;
-	get(hostname: string): TPromise<EntryObject[] | undefined>;
-	delete(hostname: string): TPromise<boolean>;
-	clear(): TPromise<void>;
-}
-
 export interface Options {
-	/**
-	 * Custom cache instance. If `undefined`, it will create a new one.
-	 * @default undefined
-	 */
-	cache?: CacheInstance;
 	/**
 	 * Limits the cache time (TTL). If set to `0`, it will make a new DNS query each time.
 	 * @default Infinity

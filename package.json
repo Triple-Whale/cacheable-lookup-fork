@@ -1,6 +1,6 @@
 {
   "name": "@tw/cacheable-lookup",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "A cacheable dns.lookup(…) that respects TTL",
   "main": "module/index.js",
   "scripts": {
