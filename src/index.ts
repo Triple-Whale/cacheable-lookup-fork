@@ -99,7 +99,6 @@ export default class CacheableLookup {
     this.errorTtl = errorTtl;
     this._cache = new LRUCache({
       max: 1000,
-      ttl: maxTtl,
     });
 
     this._iface = getIfaceInfo();
@@ -231,8 +230,8 @@ export default class CacheableLookup {
       ignoreNoResultErrors(this.resolver.resolve6(hostname, ttl)),
     ]);
 
-    let aTtl = 0;
-    let aaaaTtl = 0;
+    let aTtl = Infinity;
+    let aaaaTtl = Infinity;
     let cacheTtl = 0;
 
     const now = Date.now();
@@ -243,7 +242,7 @@ export default class CacheableLookup {
       // @ts-ignore
       entry.expires = now + entry.ttl * 1000;
       // @ts-ignore
-      aTtl = Math.max(aTtl, entry.ttl);
+      aTtl = Math.min(aTtl, entry.ttl);
     }
 
     for (const entry of AAAA) {
@@ -252,7 +251,7 @@ export default class CacheableLookup {
       // @ts-ignore
       entry.expires = now + entry.ttl * 1000;
       // @ts-ignore
-      aaaaTtl = Math.max(aaaaTtl, entry.ttl);
+      aaaaTtl = Math.min(aaaaTtl, entry.ttl);
     }
 
     if (A.length > 0) {
@@ -263,10 +262,6 @@ export default class CacheableLookup {
       }
     } else {
       cacheTtl = aaaaTtl;
-    }
-
-    if (hostname.endsWith('svc.cluster.local.')) {
-      cacheTtl = 3600;
     }
 
     return {
@@ -297,7 +292,12 @@ export default class CacheableLookup {
   }
 
   _set(hostname, data, cacheTtl) {
-    this._cache.set(hostname, data, { ttl: cacheTtl });    
+    const ttlMs = Math.min(cacheTtl, this.maxTtl) * 1000;
+    if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
+      return;
+    }
+
+    this._cache.set(hostname, data, { ttl: ttlMs });
   }
 
   async queryAndCache(hostname) {

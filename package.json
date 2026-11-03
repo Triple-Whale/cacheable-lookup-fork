@@ -7,7 +7,7 @@
     "dev": "tsc --watch --preserveWatchOutput",
     "build": "npm i && tsc",
     "deploy": "tw publish utils",
-    "test": "jest --watch"
+    "test": "tsc && node --test test/*.test.cjs"
   },
   "devDependencies": {
     "@types/node": "^18.11.18",
